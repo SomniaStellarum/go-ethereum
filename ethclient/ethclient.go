@@ -93,9 +93,14 @@ func (ec *Client) getBlock(ctx context.Context, method string, args ...interface
 		return nil, ethereum.NotFound
 	}
 	// Decode header and transactions.
+	var localHeader *Header
 	var head *types.Header
 	var body rpcBlock
-	if err := json.Unmarshal(raw, &head); err != nil {
+	if err = json.Unmarshal(raw, &localHeader); err != nil {
+		return nil, err
+	}
+	// Convert to *types.Header
+	if head, err = localHeader.convertHeader(); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
