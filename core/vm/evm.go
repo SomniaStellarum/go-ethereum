@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/vm/kevm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 )
@@ -125,6 +126,9 @@ type EVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+	// KEVM Server used for when replacing the EVM with the KEVM Server. Nil when
+	// not needed.
+	kServer *kevm.Server
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
@@ -137,6 +141,11 @@ func NewEVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmCon
 		chainConfig:  chainConfig,
 		chainRules:   chainConfig.Rules(ctx.BlockNumber),
 		interpreters: make([]Interpreter, 0, 1),
+	}
+
+	if evm.vmConfig.UseKEVM {
+		// TODO: Check the error returned.
+		evm.kServer, _ = kevm.NewServer()
 	}
 
 	if chainConfig.IsEWASM(ctx.BlockNumber) {
