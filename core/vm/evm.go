@@ -145,7 +145,7 @@ func NewEVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmCon
 
 	if evm.vmConfig.UseKEVM {
 		// TODO: Check the error returned.
-		evm.kServer, _ = kevm.NewServer()
+		evm.kServer, _ = kevm.NewServer(evm.chainConfig)
 	}
 
 	if chainConfig.IsEWASM(ctx.BlockNumber) {
@@ -188,6 +188,11 @@ func (evm *EVM) Interpreter() Interpreter {
 // the necessary steps to create accounts and reverses the state in case of an
 // execution error or failed value transfer.
 func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	// TODO: Is correct placement of this call? Should we check for anything first eg Call Depth?
+	if evm.vmConfig.UseKEVM {
+		return evm.kServer.Call(caller.Address(), addr, input, gas, value)
+	}
+
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {
 		return nil, gas, nil
 	}
@@ -453,6 +458,10 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 // Create creates a new contract using code as deployment code.
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
+	//TODO: Checks before passing to KEVM?
+	if evm.vmConfig.UseKEVM {
+		return evm.kServer.Create(caller.Address(), code, gas, value)
+	}
 	contractAddr = crypto.CreateAddress(caller.Address(), evm.StateDB.GetNonce(caller.Address()))
 	return evm.create(caller, &codeAndHash{code: code}, gas, value, contractAddr)
 }
