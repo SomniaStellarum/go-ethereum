@@ -145,7 +145,7 @@ func NewEVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmCon
 
 	if evm.vmConfig.UseKEVM {
 		// TODO: Check the error returned.
-		evm.kServer, _ = kevm.NewServer(evm.chainConfig)
+		evm.kServer, _ = kevm.NewServer(evm.chainConfig, evm.StateDB, kevm.GetHash(evm.Context.GetHash))
 	}
 
 	if chainConfig.IsEWASM(ctx.BlockNumber) {
