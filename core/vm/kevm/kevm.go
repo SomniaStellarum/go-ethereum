@@ -26,6 +26,8 @@ type StateDB interface {
 	GetCode(common.Address) []byte
 	GetCodeSize(common.Address) int
 	GetState(common.Address, common.Hash) common.Hash
+	Exist(common.Address) bool
+	Empty(common.Address) bool
 }
 
 func NewServer(chainConfig *params.ChainConfig, stateDB StateDB, getHash GetHash) (s *Server, err error) {
@@ -108,14 +110,56 @@ func (s *Server) sendAndReturn(ctx *CallContext) (result *CallResult, err error)
 		switch v := vmQuery.Query.(type) {
 		case *VMQuery_GetCode:
 			addr := common.BytesToAddress(v.GetCode.Address)
-			s.stateDB.GetCode(addr)
-			// TODO Return code
+			ret := &Code{}
+			ret.Code = s.stateDB.GetCode(addr)
+			b, err := proto.Marshal(ret)
+			_, err = s.server.Write(b)
+			if err != nil {
+				return nil, err
+			}
 		case *VMQuery_CallResult:
-			return result, err
+			return v.CallResult, err
 		case *VMQuery_GetAccount:
+			addr := common.BytesToAddress(v.GetAccount.Address)
+			ret := &Account{}
+			if !s.stateDB.Exist(addr) {
+				b, err := proto.Marshal(ret)
+				_, err = s.server.Write(b)
+				if err != nil {
+					return nil, err
+				}
+				break
+			}
+			ret.Balance = s.stateDB.GetBalance(addr).Bytes()
+			binary.BigEndian.PutUint64(ret.Nonce, s.stateDB.GetNonce(addr))
+			if s.stateDB.GetCodeSize(addr) == 0 {
+				ret.CodeEmpty = true
+			} else {
+				ret.CodeHash = s.stateDB.GetCodeHash(addr).Bytes()
+			}
+			b, err := proto.Marshal(ret)
+			_, err = s.server.Write(b)
+			if err != nil {
+				return nil, err
+			}
 		case *VMQuery_GetBlockhash:
+			ret := &Blockhash{}
+			ret.Hash = s.getHash(uint64(v.GetBlockhash.Offset)).Bytes()
+			b, err := proto.Marshal(ret)
+			_, err = s.server.Write(b)
+			if err != nil {
+				return nil, err
+			}
 		case *VMQuery_GetStorageData:
+			ret := &StorageData{}
+			addr := common.BytesToAddress(v.GetStorageData.Address)
+			key := common.BytesToHash(v.GetStorageData.Offset)
+			ret.Data = s.stateDB.GetState(addr, key).Bytes()
+			b, err := proto.Marshal(ret)
+			_, err = s.server.Write(b)
+			if err != nil {
+				return nil, err
+			}
 		}
-
 	}
 }
