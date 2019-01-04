@@ -2,11 +2,13 @@ package kevm
 
 import (
 	"encoding/binary"
+	"errors"
 	"log"
 	"math/big"
 	"net"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/golang/protobuf/proto"
 )
@@ -20,14 +22,31 @@ type Server struct {
 }
 
 type StateDB interface {
+	CreateAccount(common.Address)
+
+	SubBalance(common.Address, *big.Int)
+	AddBalance(common.Address, *big.Int)
 	GetBalance(common.Address) *big.Int
+
 	GetNonce(common.Address) uint64
+	SetNonce(common.Address, uint64)
+
 	GetCodeHash(common.Address) common.Hash
 	GetCode(common.Address) []byte
+	SetCode(common.Address, []byte)
 	GetCodeSize(common.Address) int
+
 	GetState(common.Address, common.Hash) common.Hash
+	SetState(common.Address, common.Hash, common.Hash)
+
+	AddRefund(uint64)
+
+	Suicide(common.Address) bool
+
 	Exist(common.Address) bool
 	Empty(common.Address) bool
+
+	AddLog(*types.Log)
 }
 
 func NewServer(chainConfig *params.ChainConfig, stateDB StateDB, getHash GetHash) (s *Server, err error) {
@@ -67,21 +86,83 @@ func (s *Server) Call(caller common.Address, addr common.Address, input []byte, 
 	callCtx.InputData = input
 	callCtx.CallValue = value.Bytes()
 	binary.BigEndian.PutUint64(callCtx.GasProvided, gas)
-	result, err := s.sendAndReturn(callCtx)
-	if err != nil {
-		return nil, 0, err
-	}
-	// TODO: Error Check and do we need to change Modified/Deleted accounts?
-	ret = result.ReturnData
-	leftOverGas = binary.BigEndian.Uint64(result.GasRemaining)
-	return ret, leftOverGas, nil
+	ret, _, leftOverGas, err = s.callCtx(callCtx, false)
+	return
 }
 
 func (s *Server) Create(caller common.Address, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
-	// TODO: Send CallContext Message
-	// Similar to Call above, but also need to return created Contract Address
-	// This info likely (but need to check) in ModifiedAccount
-	return ret, contractAddr, leftOverGas, nil
+	callCtx := &CallContext{}
+	callCtx.CallerAddr = caller.Bytes()
+	callCtx.InputData = code
+	callCtx.CallValue = value.Bytes()
+	binary.BigEndian.PutUint64(callCtx.GasProvided, gas)
+	ret, contractAddr, leftOverGas, err = s.callCtx(callCtx, true)
+	return
+}
+
+func (s *Server) callCtx(ctx *CallContext, createContract bool) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error) {
+	nilAddr := common.BytesToAddress([]byte("0x0"))
+	result, err := s.sendAndReturn(ctx)
+	if err != nil {
+		return nil, nilAddr, 0, err
+	}
+	if result.Error {
+		// TODO: Should this return a standardized error?
+		return nil, nilAddr, 0, errors.New("VM Returned Error")
+	}
+	// Modify Accounts
+	for _, mAccount := range result.ModifiedAccounts {
+		mAddr := common.BytesToAddress(mAccount.Address)
+		if s.stateDB.Exist(mAddr) {
+			bal := new(big.Int)
+			bal.SetBytes(mAccount.Balance)
+			cur_bal := s.stateDB.GetBalance(mAddr)
+			bal.Sub(bal, cur_bal)
+			sign := bal.Sign()
+			if sign == -1 {
+				bal.Neg(bal)
+				s.stateDB.SubBalance(mAddr, bal)
+			} else if sign == 1 {
+				s.stateDB.AddBalance(mAddr, bal)
+			}
+		} else {
+			s.stateDB.CreateAccount(mAddr)
+			bal := new(big.Int)
+			bal.SetBytes(mAccount.Balance)
+			s.stateDB.AddBalance(mAddr, bal)
+		}
+		s.stateDB.SetNonce(mAddr, binary.BigEndian.Uint64(mAccount.Nonce))
+		s.stateDB.SetCode(mAddr, mAccount.Code)
+		for _, sUpdate := range mAccount.StorageUpdates {
+			key := common.BytesToHash(sUpdate.Offset)
+			value := common.BytesToHash(sUpdate.Data)
+			s.stateDB.SetState(mAddr, key, value)
+		}
+	}
+	// Delete Accounts
+	for _, dAccount := range result.DeletedAccounts {
+		dAddr := common.BytesToAddress(dAccount)
+		bal := s.stateDB.GetBalance(dAddr)
+		s.stateDB.SubBalance(dAddr, bal)
+		s.stateDB.Suicide(dAddr)
+	}
+	// Add Logs
+	for _, lg := range result.Logs {
+		lgToStore := new(types.Log)
+		lgToStore.Address = common.BytesToAddress(lg.Address)
+		lgToStore.Data = lg.Data
+		for _, tp := range lg.Topics {
+			lgToStore.Topics = append(lgToStore.Topics, common.BytesToHash(tp))
+		}
+		s.stateDB.AddLog(lgToStore)
+	}
+	s.stateDB.AddRefund(binary.BigEndian.Uint64(result.GasRefund))
+	ret = result.ReturnData
+	leftOverGas = binary.BigEndian.Uint64(result.GasRemaining)
+	// TODO: Determine how to find contract Address
+	// Will only run this code when createContract bool is true
+	// This is to separate Call from Create
+	return ret, nilAddr, leftOverGas, nil
 }
 
 func (s *Server) sendAndReturn(ctx *CallContext) (result *CallResult, err error) {
